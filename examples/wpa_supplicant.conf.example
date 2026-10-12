@@ -1,0 +1,9 @@
+ap_scan=1
+update_config=1
+country=IN # Here, enter your country code
+
+network={
+    ssid="YOUR_SSID_HERE"
+    psk="PASS_HERE"
+    key_mgmt=WPA-PSK
+}

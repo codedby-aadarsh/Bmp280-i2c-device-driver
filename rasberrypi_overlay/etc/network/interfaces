@@ -1,0 +1,13 @@
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+
+auto wlan0
+iface wlan0 inet dhcp
+    pre-up modprobe brcmfmac
+    pre-up sleep 1
+    pre-up iw dev wlan0 set power_save on
+    pre-up wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211
+    post-down killall wpa_supplicant

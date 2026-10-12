@@ -1,0 +1,10 @@
+.vscode/
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+modules.order
+Module.symvers
+rasberrypi_overlay/etc/wpa_supplicant.conf
