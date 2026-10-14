@@ -9,7 +9,75 @@ MODULE_AUTHOR("Aadarsh Mandal");
 MODULE_DESCRIPTION("A simple bmp280 i2c device driver");
 MODULE_VERSION("0.1");
 
-u8 lsb,msb,xlsb;
+typedef s32 BMP280_S32_t;
+typedef u32 BMP280_U32_t;
+typedef s64 BMP280_S64_t;
+
+// Force the compiler to pack the struct to exactly 22 bytes
+#pragma pack(push, 1)
+typedef union{
+    u8 calib_buf[24];
+    struct{
+        u16 dig_T1;
+        s16 dig_T2;
+        s16 dig_T3;
+        u16 dig_P1;
+        s16 dig_P2;
+        s16 dig_P3;
+        s16 dig_P4;
+        s16 dig_P5;
+        s16 dig_P6;
+        s16 dig_P7;
+        s16 dig_P8;
+        s16 dig_P9;
+    }__attribute__((packed)) fields; ;
+}Bmp_280_calib;
+#pragma pack(pop)
+
+Bmp_280_calib dev_calib;
+u8 buffer[6]; // buffer for reading the 6 byte of pressure and temp raw value
+BMP280_S32_t t_fine;
+BMP280_U32_t bmp280_compensate_P_int64(BMP280_S32_t adc_P);
+
+/* convert the raw temperature data to a temp value */
+BMP280_S32_t bmp280_compensate_T_int32(BMP280_S32_t adc_T) {
+    BMP280_S32_t var1, var2, T;
+
+    // Fixed en-dashes (–) to standard ASCII hyphens (-)
+    var1 = ((((adc_T >> 3) - ((BMP280_S32_t)dev_calib.fields.dig_T1 << 1))) * ((BMP280_S32_t)dev_calib.fields.dig_T2)) >> 11;
+    
+    var2 = (((((adc_T >> 4) - ((BMP280_S32_t)dev_calib.fields.dig_T1)) * ((adc_T >> 4) - ((BMP280_S32_t)dev_calib.fields.dig_T1))) >> 12) * 
+            ((BMP280_S32_t)dev_calib.fields.dig_T3)) >> 14;
+    
+    t_fine = var1 + var2;
+    
+    T = (t_fine * 5 + 128) >> 8;
+    return T;
+}
+
+/* convert the raw data to the pressure */
+BMP280_U32_t bmp280_compensate_P_int64(BMP280_S32_t adc_P) {
+    BMP280_S64_t var1, var2, p;
+
+    var1 = ((BMP280_S64_t)t_fine) - 128000;
+    var2 = var1 * var1 * (BMP280_S64_t)dev_calib.fields.dig_P6;
+    var2 = var2 + ((var1 * (BMP280_S64_t)dev_calib.fields.dig_P5) << 17);
+    var2 = var2 + (((BMP280_S64_t)dev_calib.fields.dig_P4) << 35);
+    var1 = ((var1 * var1 * (BMP280_S64_t)dev_calib.fields.dig_P3) >> 8) + ((var1 * (BMP280_S64_t)dev_calib.fields.dig_P2) << 12);
+    var1 = (((((BMP280_S64_t)1) << 47) + var1)) * ((BMP280_S64_t)dev_calib.fields.dig_P1) >> 33;
+
+    if (var1 == 0) {
+        return 0; // Avoid exception caused by division by zero
+    }
+
+    p = 1048576 - adc_P;
+    p = (((p << 31) - var2) * 3125) / var1;
+    var1 = (((BMP280_S64_t)dev_calib.fields.dig_P9) * (p >> 13) * (p >> 13)) >> 25;
+    var2 = (((BMP280_S64_t)dev_calib.fields.dig_P8) * p) >> 19;
+    p = ((p + var1 + var2) >> 8) + (((BMP280_S64_t)dev_calib.fields.dig_P7) << 4);
+
+    return (BMP280_U32_t)p;
+}
 
 static int my_bmp280_probe(struct i2c_client *client)
 {
@@ -94,26 +162,32 @@ static int my_bmp280_probe(struct i2c_client *client)
     pr_info("bmp280_driver:Config register read value 0x%02x is valid\n",ret); 
     pr_info("bmp280_driver:Driver has been initialised sucessfully\n"); 
 
-    msb = i2c_smbus_read_byte_data(client,0xFA);
-    if (msb < 0)
+    /**
+     * Now we got to read the block of the 6 bytes , at once 
+     * rather than reading the individual register its necessary 
+     * to read all at once to take the right value all at once 
+     * where the pressure and temp register forms a 6 byte continous
+     * register starting from the 0xF7 to 0xFC.
+     */
+    ret = i2c_smbus_read_i2c_block_data(client,0xF7,6,buffer);
+    if (ret < 0)
     {
-        pr_err("bmp280_driver: Failed to read from I2C bus! Error code: %d\n", msb);
-        return msb;
+        pr_err("bmp280_driver: Failed to read from I2C bus! Error code: %d\n", ret);
+        return ret;
     }
-    lsb = i2c_smbus_read_byte_data(client,0xFB);
-    if (lsb < 0)
+    pr_info("bmp280_driver:Press raw data read: %d\n",((u32)buffer[0]<<12)|((u32)buffer[1]<<4)|((u32)buffer[2]>>4));
+    pr_info("bmp280_driver:Temp raw data read: %d\n",((u32)buffer[3]<<12)|((u32)buffer[4]<<4)|((u32)buffer[5]>>4)); 
+    ret = i2c_smbus_read_i2c_block_data(client,0x88,sizeof(Bmp_280_calib),dev_calib.calib_buf);
+    if (ret < 0)
     {
-        pr_err("bmp280_driver: Failed to read from I2C bus! Error code: %d\n", lsb);
-        return lsb;
+        pr_err("bmp280_driver: Failed to read from I2C bus! Error code: %d\n", ret);
+        return ret;
     }
-    xlsb = i2c_smbus_read_byte_data(client,0xFC);
-    if (xlsb < 0)
-    {
-        pr_err("bmp280_driver: Failed to read from I2C bus! Error code: %d\n", xlsb);
-        return xlsb;
-    }
-    u32 temp = ((u32)msb<<12)|((u32)lsb<<4)|((u32)xlsb>>4);
-    pr_info("bmp280_driver:Temp raw data read: %d\n",temp); 
+    BMP280_S32_t press  = ((u32)buffer[0]<<12)|((u32)buffer[1]<<4)|((u32)buffer[2]>>4);
+    BMP280_S32_t temp = ((u32)buffer[3]<<12)|((u32)buffer[4]<<4)|((u32)buffer[5]>>4);
+
+    pr_info("bmp280_driver:curr_temp : %d curr_press : %d\n",bmp280_compensate_T_int32(temp),bmp280_compensate_P_int64(press)); 
+
     return 0;
 }
 static void my_bmp280_remove(struct i2c_client *client)
